@@ -3,11 +3,11 @@ const Product = require('../models/Product');
 const Customer = require('../models/Customer');
 const generateOrderId = require('../utils/generateOrderId');
 const { updateDailyFinance } = require('../services/financeService');
-const { sendOrderNotification } = require('../services/emailService');
-const { sendWhatsAppNotification } = require('../services/whatsappService');
+const { sendOrderNotification, sendCustomerConfirmation } = require('../services/emailService');
 
 const ALLOWED_STATUSES = ['preparing', 'shipping', 'delivered'];
 
+// 📦 1. إنشاء أوردر جديد + خصم المخزون + حساب الأرباح + تحديث إحصائيات المبيعات
 exports.createOrder = async (req, res, next) => {
   try {
     const { items, shippingFees = 0, discountAmount = 0, paymentMethod = 'COD' } = req.body;
@@ -34,6 +34,19 @@ exports.createOrder = async (req, res, next) => {
         return res.status(400).json({ message: `⚠️ الكمية المتاحة من "${dbProduct.nameAr}" غير كافية (متبقي ${dbProduct.stock} فقط)` });
       }
 
+      // تحديد اللون/الفاريانت المختار بالظبط (سواء كان لون عام أو لون تابع لجهاز معين) والتحقق من مخزونه لوحده
+      let matchedVariant = null;
+      if (item.chosenDevice) {
+        const device = dbProduct.devices.find(d => d.deviceName === item.chosenDevice);
+        matchedVariant = device ? device.variants.find(v => v.color === item.chosenColor) : null;
+      } else {
+        matchedVariant = dbProduct.variants.find(v => v.color === item.chosenColor);
+      }
+
+      if (matchedVariant && typeof matchedVariant.stock === 'number' && matchedVariant.stock < item.quantity) {
+        return res.status(400).json({ message: `⚠️ لون "${item.chosenColor}" من "${dbProduct.nameAr}" نفذت كميته (متبقي ${matchedVariant.stock} فقط)` });
+      }
+
       const itemCost = (dbProduct.costPrice || 0) * item.quantity;
       const itemSale = dbProduct.price * item.quantity;
 
@@ -44,16 +57,18 @@ exports.createOrder = async (req, res, next) => {
         product: dbProduct._id,
         nameSnapshot: dbProduct.nameAr,
         chosenColor: item.chosenColor,
+        chosenDevice: item.chosenDevice || null,
         quantity: item.quantity,
         costPriceAtPurchase: dbProduct.costPrice || 0,
         salePriceAtPurchase: dbProduct.price
       });
 
       dbProduct.stock = Math.max(0, dbProduct.stock - item.quantity);
-      const variant = dbProduct.variants.find(v => v.color === item.chosenColor);
-      if (variant && typeof variant.stock === 'number') {
-        variant.stock = Math.max(0, variant.stock - item.quantity);
+      if (matchedVariant && typeof matchedVariant.stock === 'number') {
+        matchedVariant.stock = Math.max(0, matchedVariant.stock - item.quantity);
       }
+      // تحديث عداد المبيعات - يستخدم في تحليلات "الأكثر مبيعاً" بلوحة الأدمن
+      dbProduct.salesCount = (dbProduct.salesCount || 0) + item.quantity;
       await dbProduct.save();
     }
 
@@ -80,10 +95,10 @@ exports.createOrder = async (req, res, next) => {
     await updateDailyFinance(grandTotal, totalCostOfItems, shippingFees, netProfit);
 
     sendOrderNotification(newOrder, customer).catch(err =>
-      console.error('❌ فشل إرسال إشعار الإيميل:', err.message)
+      console.error('❌ فشل إرسال إشعار الإيميل للأدمن:', err.message)
     );
-    sendWhatsAppNotification(newOrder, customer).catch(err =>
-      console.error('❌ فشل إرسال إشعار الواتساب:', err.message)
+    sendCustomerConfirmation(newOrder, customer).catch(err =>
+      console.error('❌ فشل إرسال تأكيد الإيميل للعميل:', err.message)
     );
 
     res.status(201).json({
@@ -98,6 +113,7 @@ exports.createOrder = async (req, res, next) => {
   }
 };
 
+// 📜 2. جلب أوردرات العميل الحالي فقط (هيستوري مرتب بالأحدث أولاً)
 exports.getMyOrders = async (req, res, next) => {
   try {
     const orders = await Order.find({ customer: req.userId }).sort({ createdAt: -1 });
@@ -107,6 +123,7 @@ exports.getMyOrders = async (req, res, next) => {
   }
 };
 
+// 👑 3. جلب جميع الأوردرات (للأدمن فقط)
 exports.getAllOrders = async (req, res, next) => {
   try {
     const orders = await Order.find()
@@ -118,6 +135,7 @@ exports.getAllOrders = async (req, res, next) => {
   }
 };
 
+// 🔄 4. تحديث حالة الأوردر (للأدمن) - preparing / shipping / delivered
 exports.updateOrderStatus = async (req, res, next) => {
   try {
     const { orderStatus, note } = req.body;

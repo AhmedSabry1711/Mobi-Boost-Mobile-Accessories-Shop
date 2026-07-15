@@ -11,11 +11,10 @@ const customerSchema = new mongoose.Schema({
   email: {
     type: String,
     required: [true, 'البريد الإلكتروني مطلوب'],
-    unique: true, // يمنع تكرار الإيميل
-    trim: true,
+    unique: true,
     lowercase: true,
-    // ريجكس يجبر المستخدم على إدخال إيميل ينتهي بـ @gmail.com
-    match: [/^[a-zA-Z0-9._%+-]+@gmail\.com$/, 'يجب استخدام بريد إلكتروني ينتهي بـ @gmail.com']
+    trim: true,
+    match: [/^\S+@\S+\.\S+$/, 'صيغة البريد الإلكتروني غير صحيحة']
   },
   password: {
     type: String,
@@ -35,6 +34,11 @@ const customerSchema = new mongoose.Schema({
   previousOrders: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Order' // هنا بنربطه بموديل الأوردرات مستقبلاً
+  }],
+  // قائمة المفضلة (Wishlist) - منتجات حفظها العميل لمراجعتها لاحقاً
+  wishlist: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Product'
   }]
 }, { timestamps: true });
 

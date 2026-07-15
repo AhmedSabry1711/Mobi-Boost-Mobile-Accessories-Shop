@@ -14,6 +14,7 @@ const OrderSchema = new mongoose.Schema({
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
     nameSnapshot: String,
     chosenColor: String,
+    chosenDevice: { type: String, default: null },
     quantity: { type: Number, required: true, min: 1 },
     costPriceAtPurchase: { type: Number, default: 0 },
     salePriceAtPurchase: { type: Number, required: true }
@@ -31,7 +32,7 @@ const OrderSchema = new mongoose.Schema({
   paymentMethod: { type: String, enum: ['COD', 'Card'], default: 'COD' },
   paymentStatus: { type: String, enum: ['Pending', 'Paid', 'Failed', 'Refunded'], default: 'Pending' },
 
-  // أكواد إنجليزية ثابتة بدل النصوص العربية - يمنع أي مشكلة تطابق نصوص عربي مستقبلاً
+  // أكواد إنجليزية ثابتة بدل النصوص العربية - يمنع أي مشكلة تطابق نصوص عربي
   orderStatus: {
     type: String,
     enum: ['preparing', 'shipping', 'delivered'],

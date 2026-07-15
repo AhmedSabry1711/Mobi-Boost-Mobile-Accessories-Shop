@@ -2,8 +2,9 @@ const mongoose = require('mongoose');
 
 const VariantSchema = new mongoose.Schema({
   color: { type: String, required: [true, 'اسم اللون مطلوب'], trim: true },
-  img: { type: String, required: [true, 'صورة اللون مطلوبة'] },
-  stock: { type: Number, default: 0, min: 0 }
+  img: { type: String, required: [true, 'صورة اللون مطلوبة'] }, // الصورة الرئيسية (تستخدم في الكروت والقوائم)
+  images: { type: [String], default: [] }, // صور إضافية (جاليري) - اختياري، تظهر في صفحة تفاصيل المنتج
+  stock: { type: Number, default: 0, min: 0 } // مخزون خاص باللون ده لو حبيت تتبع كل لون لوحده
 }, { _id: false });
 
 const DeviceVariantSchema = new mongoose.Schema({
@@ -15,9 +16,9 @@ const DeviceVariantSchema = new mongoose.Schema({
 }, { _id: false });
 
 const ProductSchema = new mongoose.Schema({
-  sku: { type: String, unique: true, trim: true },
+  sku: { type: String, unique: true, trim: true }, // بيتولد تلقائي، مش لازم الأدمن يدخله
   category: { type: String, required: [true, 'القسم مطلوب'], index: true },
-  nameAr: { type: String, required: [true, 'اسم المنتج بالعربية مطلوب'], trim: true },
+  nameAr: { type: String, required: [true, 'اسم المنتج بالعربية مطلوب'], trim: true, index: 'text' },
   nameEn: { type: String, trim: true },
   descAr: { type: String, default: '' },
   descEn: { type: String, default: '' },
@@ -35,14 +36,24 @@ const ProductSchema = new mongoose.Schema({
     default: []
   },
 
+  // اختياري - لو المنتج مخصص لأجهزة معينة (زي الجرابات والاسكرينات)، كل جهاز له ألوانه وصوره الخاصة
   devices: {
     type: [DeviceVariantSchema],
     default: []
   },
 
+  // اختياري - فيديو إعلاني احترافي للمنتج يظهر في صفحة التفاصيل (رابط MP4 مباشر أو يوتيوب/فيميو)
+  videoUrl: { type: String, default: '' },
+
+  // إحصائيات مبيعات وتقييمات - بتتحدث تلقائياً من الأوردرات والمراجعات، متتعدلش يدوياً
+  salesCount: { type: Number, default: 0 },
+  avgRating: { type: Number, default: 0 },
+  reviewCount: { type: Number, default: 0 },
+
   isActive: { type: Boolean, default: true }
 }, { timestamps: true });
 
+// ملحوظة: Mongoose v9 بيشغل الـ pre hooks كدالة عادية (sync) من غير ما يبعتلها next خالص
 ProductSchema.pre('validate', function () {
   if (!this.sku) {
     const prefix = (this.category || 'GEN').toUpperCase().slice(0, 4);

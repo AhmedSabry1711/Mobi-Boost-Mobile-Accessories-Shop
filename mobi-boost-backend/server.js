@@ -34,6 +34,14 @@ console.log('🔄 [5] جاري فحص ملف الـ Ads...');
 const adRoutes = require('./routes/adRoutes');
 app.use('/api/ads', adRoutes);
 
+console.log('🔄 [6] جاري فحص ملف الـ Reviews...');
+const reviewRoutes = require('./routes/reviewRoutes');
+app.use('/api/reviews', reviewRoutes);
+
+console.log('🔄 [7] جاري فحص ملف الـ Customer (Wishlist)...');
+const customerRoutes = require('./routes/customerRoutes');
+app.use('/api/customer', customerRoutes);
+
 app.get('/', (req, res) => {
   res.send('🚀 MoBi Boost Backend Server is Running Smoothly!');
 });

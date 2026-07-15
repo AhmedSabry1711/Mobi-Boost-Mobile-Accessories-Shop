@@ -8,6 +8,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
+// إشعار للأدمن فور وصول أوردر جديد
 const sendOrderNotification = async (order, customer) => {
   const itemsList = order.items
     .map(i => `- ${i.nameSnapshot} (${i.chosenColor}) × ${i.quantity} = ${i.salePriceAtPurchase * i.quantity} ج.م`)
@@ -36,4 +37,37 @@ ${itemsList}
   });
 };
 
-module.exports = { sendOrderNotification };
+// تأكيد فوري للعميل نفسه إن طلبه اتسجل بنجاح
+// ملحوظة: واتساب تلقائي للعميل مش متاح مجاناً (خدمة CallMeBot المستخدمة للأدمن بتحتاج كل رقم يوافق يدوياً بنفسه مقدماً،
+// فمينفعش تتفعل تلقائياً لأي عميل جديد يسجل). الإيميل هو البديل العملي والمجاني لتأكيد الطلب للعميل.
+const sendCustomerConfirmation = async (order, customer) => {
+  const itemsList = order.items
+    .map(i => `- ${i.nameSnapshot} (${i.chosenColor}) × ${i.quantity}`)
+    .join('\n');
+
+  const mailBody = `
+مرحباً ${customer.name} 👋
+
+تم تأكيد طلبك بنجاح وجاري تجهيزه الآن!
+
+رقم الطلب: ${order.orderNumber}
+
+🛒 المنتجات:
+${itemsList}
+
+💰 الإجمالي: ${order.financials.grandTotal} ج.م
+📍 عنوان الشحن: ${customer.address}
+
+هتوصلك رسالة تانية فور شحن الطلب.
+شكراً لثقتك في MoBi Boost 💙
+  `.trim();
+
+  await transporter.sendMail({
+    from: `"MoBi Boost" <${process.env.ADMIN_EMAIL}>`,
+    to: customer.email,
+    subject: `تم تأكيد طلبك #${order.orderNumber} 🎉`,
+    text: mailBody
+  });
+};
+
+module.exports = { sendOrderNotification, sendCustomerConfirmation };
