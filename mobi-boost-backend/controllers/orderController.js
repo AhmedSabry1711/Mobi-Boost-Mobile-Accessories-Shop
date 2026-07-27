@@ -1,16 +1,79 @@
 const Order = require('../models/Order');
 const Product = require('../models/Product');
 const Customer = require('../models/Customer');
+const Coupon = require('../models/Coupon');
 const generateOrderId = require('../utils/generateOrderId');
 const { updateDailyFinance } = require('../services/financeService');
 const { sendOrderNotification, sendCustomerConfirmation } = require('../services/emailService');
+const { calculateOrderTotals } = require('../services/promotionService');
 
 const ALLOWED_STATUSES = ['preparing', 'shipping', 'delivered'];
 
-// 📦 1. إنشاء أوردر جديد + خصم المخزون + حساب الأرباح + تحديث إحصائيات المبيعات
+const resolveAndValidateItems = async (items) => {
+  const resolvedItems = [];
+
+  for (const item of items) {
+    const dbProduct = await Product.findById(item.productId);
+    if (!dbProduct) {
+      throw { status: 404, message: `⚠️ أحد المنتجات في طلبك لم يعد متاحاً` };
+    }
+    if (dbProduct.stock < item.quantity) {
+      throw { status: 400, message: `⚠️ الكمية المتاحة من "${dbProduct.nameAr}" غير كافية (متبقي ${dbProduct.stock} فقط)` };
+    }
+
+    let matchedVariant = null;
+    if (item.chosenDevice) {
+      const device = dbProduct.devices.find(d => d.deviceName === item.chosenDevice);
+      matchedVariant = device ? device.variants.find(v => v.color === item.chosenColor) : null;
+    } else {
+      matchedVariant = dbProduct.variants.find(v => v.color === item.chosenColor);
+    }
+
+    if (matchedVariant && typeof matchedVariant.stock === 'number' && matchedVariant.stock < item.quantity) {
+      throw { status: 400, message: `⚠️ لون "${item.chosenColor}" من "${dbProduct.nameAr}" نفذت كميته (متبقي ${matchedVariant.stock} فقط)` };
+    }
+
+    resolvedItems.push({
+      product: dbProduct,
+      matchedVariant,
+      quantity: item.quantity,
+      chosenColor: item.chosenColor,
+      chosenDevice: item.chosenDevice || null,
+      unitPrice: dbProduct.price
+    });
+  }
+
+  return resolvedItems;
+};
+
+const toPublicTotals = (totals) => ({
+  subTotal: totals.subTotal,
+  discountAmount: totals.discountAmount,
+  shippingFees: totals.shippingFees,
+  grandTotal: totals.grandTotal,
+  appliedPromotions: totals.appliedPromotions,
+  couponError: totals.couponError || null
+});
+
+exports.calculateCart = async (req, res, next) => {
+  try {
+    const { items, couponCode } = req.body;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ message: '⚠️ السلة فارغة' });
+    }
+
+    const resolvedItems = await resolveAndValidateItems(items);
+    const totals = await calculateOrderTotals(resolvedItems, couponCode || null);
+    res.json(toPublicTotals(totals));
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ message: error.message });
+    next(error);
+  }
+};
+
 exports.createOrder = async (req, res, next) => {
   try {
-    const { items, shippingFees = 0, discountAmount = 0, paymentMethod = 'COD' } = req.body;
+    const { items, paymentMethod = 'COD', couponCode } = req.body;
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: '⚠️ السلة فارغة، لا يمكن تنفيذ الطلب' });
@@ -21,59 +84,46 @@ exports.createOrder = async (req, res, next) => {
       return res.status(404).json({ message: '⚠️ الحساب غير موجود، برجاء تسجيل الدخول من جديد' });
     }
 
+    let resolvedItems;
+    try {
+      resolvedItems = await resolveAndValidateItems(items);
+    } catch (err) {
+      return res.status(err.status || 400).json({ message: err.message });
+    }
+
+    const totals = await calculateOrderTotals(resolvedItems, couponCode || null);
+
+    if (couponCode && totals.couponError) {
+      return res.status(400).json({ message: `⚠️ ${totals.couponError}` });
+    }
+
     let totalCostOfItems = 0;
-    let subTotal = 0;
     const processedItems = [];
 
-    for (const item of items) {
-      const dbProduct = await Product.findById(item.productId);
-      if (!dbProduct) {
-        return res.status(404).json({ message: `⚠️ أحد المنتجات في طلبك لم يعد متاحاً` });
-      }
-      if (dbProduct.stock < item.quantity) {
-        return res.status(400).json({ message: `⚠️ الكمية المتاحة من "${dbProduct.nameAr}" غير كافية (متبقي ${dbProduct.stock} فقط)` });
-      }
+    for (const item of resolvedItems) {
+      const { product: dbProduct, matchedVariant, quantity } = item;
 
-      // تحديد اللون/الفاريانت المختار بالظبط (سواء كان لون عام أو لون تابع لجهاز معين) والتحقق من مخزونه لوحده
-      let matchedVariant = null;
-      if (item.chosenDevice) {
-        const device = dbProduct.devices.find(d => d.deviceName === item.chosenDevice);
-        matchedVariant = device ? device.variants.find(v => v.color === item.chosenColor) : null;
-      } else {
-        matchedVariant = dbProduct.variants.find(v => v.color === item.chosenColor);
-      }
-
-      if (matchedVariant && typeof matchedVariant.stock === 'number' && matchedVariant.stock < item.quantity) {
-        return res.status(400).json({ message: `⚠️ لون "${item.chosenColor}" من "${dbProduct.nameAr}" نفذت كميته (متبقي ${matchedVariant.stock} فقط)` });
-      }
-
-      const itemCost = (dbProduct.costPrice || 0) * item.quantity;
-      const itemSale = dbProduct.price * item.quantity;
-
-      totalCostOfItems += itemCost;
-      subTotal += itemSale;
+      totalCostOfItems += (dbProduct.costPrice || 0) * quantity;
 
       processedItems.push({
         product: dbProduct._id,
         nameSnapshot: dbProduct.nameAr,
         chosenColor: item.chosenColor,
-        chosenDevice: item.chosenDevice || null,
-        quantity: item.quantity,
+        chosenDevice: item.chosenDevice,
+        quantity,
         costPriceAtPurchase: dbProduct.costPrice || 0,
         salePriceAtPurchase: dbProduct.price
       });
 
-      dbProduct.stock = Math.max(0, dbProduct.stock - item.quantity);
+      dbProduct.stock = Math.max(0, dbProduct.stock - quantity);
       if (matchedVariant && typeof matchedVariant.stock === 'number') {
-        matchedVariant.stock = Math.max(0, matchedVariant.stock - item.quantity);
+        matchedVariant.stock = Math.max(0, matchedVariant.stock - quantity);
       }
-      // تحديث عداد المبيعات - يستخدم في تحليلات "الأكثر مبيعاً" بلوحة الأدمن
-      dbProduct.salesCount = (dbProduct.salesCount || 0) + item.quantity;
+      dbProduct.salesCount = (dbProduct.salesCount || 0) + quantity;
       await dbProduct.save();
     }
 
-    const grandTotal = subTotal + shippingFees - discountAmount;
-    const netProfit = grandTotal - totalCostOfItems - shippingFees;
+    const netProfit = totals.grandTotal - totalCostOfItems - totals.shippingFees;
     const orderNumber = generateOrderId();
 
     const newOrder = new Order({
@@ -85,14 +135,27 @@ exports.createOrder = async (req, res, next) => {
         address: customer.address
       },
       items: processedItems,
-      financials: { subTotal, shippingFees, discountAmount, grandTotal, totalCostOfItems, netProfit },
+      financials: {
+        subTotal: totals.subTotal,
+        shippingFees: totals.shippingFees,
+        discountAmount: totals.discountAmount,
+        grandTotal: totals.grandTotal,
+        totalCostOfItems,
+        netProfit
+      },
+      appliedPromotions: totals.appliedPromotions,
       paymentMethod,
       orderStatus: 'preparing',
       statusTimeline: [{ status: 'preparing', note: 'تم استلام الطلب بنجاح وجاري تجهيزه.' }]
     });
 
     await newOrder.save();
-    await updateDailyFinance(grandTotal, totalCostOfItems, shippingFees, netProfit);
+
+    if (totals.appliedCouponDoc) {
+      await Coupon.findByIdAndUpdate(totals.appliedCouponDoc._id, { $inc: { usedCount: 1 } });
+    }
+
+    await updateDailyFinance(totals.grandTotal, totalCostOfItems, totals.shippingFees, netProfit);
 
     sendOrderNotification(newOrder, customer).catch(err =>
       console.error('❌ فشل إرسال إشعار الإيميل للأدمن:', err.message)
@@ -113,7 +176,6 @@ exports.createOrder = async (req, res, next) => {
   }
 };
 
-// 📜 2. جلب أوردرات العميل الحالي فقط (هيستوري مرتب بالأحدث أولاً)
 exports.getMyOrders = async (req, res, next) => {
   try {
     const orders = await Order.find({ customer: req.userId }).sort({ createdAt: -1 });
@@ -123,7 +185,6 @@ exports.getMyOrders = async (req, res, next) => {
   }
 };
 
-// 👑 3. جلب جميع الأوردرات (للأدمن فقط)
 exports.getAllOrders = async (req, res, next) => {
   try {
     const orders = await Order.find()
@@ -135,7 +196,6 @@ exports.getAllOrders = async (req, res, next) => {
   }
 };
 
-// 🔄 4. تحديث حالة الأوردر (للأدمن) - preparing / shipping / delivered
 exports.updateOrderStatus = async (req, res, next) => {
   try {
     const { orderStatus, note } = req.body;

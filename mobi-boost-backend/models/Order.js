@@ -29,6 +29,12 @@ const OrderSchema = new mongoose.Schema({
     netProfit: { type: Number, default: 0 }
   },
 
+  appliedPromotions: [{
+    title: String,
+    type: String,
+    discountAmount: Number
+  }],
+
   paymentMethod: { type: String, enum: ['COD', 'Card'], default: 'COD' },
   paymentStatus: { type: String, enum: ['Pending', 'Paid', 'Failed', 'Refunded'], default: 'Pending' },
 

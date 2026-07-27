@@ -159,6 +159,41 @@ export default function App() {
   const [dashboardStats, setDashboardStats] = useState(null);
   const [dashboardLoading, setDashboardLoading] = useState(false);
 
+  // 🎁 العروض والشحن
+  const [activePromotions, setActivePromotions] = useState([]); // العروض الفعالة - يستخدمها كل المستخدمين لعرض البادجات
+  const [allPromotions, setAllPromotions] = useState([]); // كل العروض - لوحة الأدمن بس
+  const [cartTotals, setCartTotals] = useState(null); // { subTotal, discountAmount, shippingFees, grandTotal, appliedPromotions }
+  const [cartTotalsLoading, setCartTotalsLoading] = useState(false);
+  const [shippingFeeSetting, setShippingFeeSetting] = useState(0);
+  // فورم إضافة عرض جديد (أدمن)
+  const [promoTitle, setPromoTitle] = useState('');
+  const [promoType, setPromoType] = useState('buy_x_get_y_free');
+  const [promoScope, setPromoScope] = useState('all');
+  const [promoCategoryTarget, setPromoCategoryTarget] = useState('cases');
+  const [promoBuyQty, setPromoBuyQty] = useState(2);
+  const [promoFreeQty, setPromoFreeQty] = useState(1);
+  const [promoMinQty, setPromoMinQty] = useState(0);
+  const [promoMinAmount, setPromoMinAmount] = useState(0);
+  const [promoDiscountValue, setPromoDiscountValue] = useState(0);
+  const [promoSaving, setPromoSaving] = useState(false);
+  const [shippingFeeInput, setShippingFeeInput] = useState('0');
+  const [shippingSaving, setShippingSaving] = useState(false);
+
+  // 🏷️ كود الخصم (Coupon) - جانب العميل
+  const [couponInput, setCouponInput] = useState('');
+  const [appliedCouponCode, setAppliedCouponCode] = useState('');
+  const [couponError, setCouponError] = useState('');
+  const [couponApplying, setCouponApplying] = useState(false);
+
+  // 🏷️ إدارة أكواد الخصم - لوحة الأدمن
+  const [allCoupons, setAllCoupons] = useState([]);
+  const [couponCodeInput, setCouponCodeInput] = useState('');
+  const [couponPercentInput, setCouponPercentInput] = useState('');
+  const [couponMinAmountInput, setCouponMinAmountInput] = useState('0');
+  const [couponMaxUsesInput, setCouponMaxUsesInput] = useState('0');
+  const [couponExpiryInput, setCouponExpiryInput] = useState('');
+  const [couponSaving, setCouponSaving] = useState(false);
+
   // قاعدة بيانات الطلبات - بتتحمل من الباك إند حسب الدور (عميل: طلباته فقط / أدمن: كل الطلبات)
   const [orders, setOrders] = useState([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
@@ -328,6 +363,277 @@ export default function App() {
       console.error('⚠️ فشل تحميل التحليلات:', err.message);
     } finally {
       setDashboardLoading(false);
+    }
+  };
+
+  // 🔄 تحميل العروض الفعالة (للجميع) - تستخدم لعرض البادجات وحساب السلة
+  const loadActivePromotions = async () => {
+    try {
+      const data = await apiFetch('/promotions/active');
+      setActivePromotions(data);
+    } catch (err) {
+      console.error('⚠️ فشل تحميل العروض:', err.message);
+    }
+  };
+  useEffect(() => { loadActivePromotions(); }, []);
+
+  // 🔄 تحميل رسوم الشحن الحالية
+  const loadShippingFee = async () => {
+    try {
+      const data = await apiFetch('/shipping');
+      setShippingFeeSetting(data.defaultFee);
+      setShippingFeeInput(String(data.defaultFee));
+    } catch (err) {
+      console.error('⚠️ فشل تحميل رسوم الشحن:', err.message);
+    }
+  };
+  useEffect(() => { loadShippingFee(); }, []);
+
+  // 🔄 تحميل كل العروض (أدمن فقط - لوحة الإدارة)
+  const loadAllPromotions = async () => {
+    if (!adminToken) return;
+    try {
+      const data = await apiFetch('/promotions', {
+        headers: { Authorization: `Bearer ${adminToken}` }
+      });
+      setAllPromotions(data);
+    } catch (err) {
+      console.error('⚠️ فشل تحميل كل العروض:', err.message);
+    }
+  };
+  useEffect(() => { if (page === 'admin' && adminTab === 'promotions' && adminToken) loadAllPromotions(); }, [page, adminTab, adminToken]);
+
+  // 🧮 حساب السلة (السبتوتال + الخصومات + الشحن) - بيتحدث تلقائياً كل ما السلة تتغير
+  const calculateCartTotals = async (couponToUse) => {
+    if (cart.length === 0) { setCartTotals(null); return; }
+    setCartTotalsLoading(true);
+    try {
+      const data = await apiFetch('/orders/calculate', {
+        method: 'POST',
+        body: JSON.stringify({
+          items: cart.map(item => ({
+            productId: item.id,
+            quantity: item.quantity,
+            chosenColor: item.chosenColor,
+            chosenDevice: item.chosenDevice || null
+          })),
+          couponCode: (couponToUse !== undefined ? couponToUse : appliedCouponCode) || null
+        })
+      });
+      setCartTotals(data);
+      if (data.couponError) {
+        setCouponError(data.couponError);
+        setAppliedCouponCode('');
+      }
+    } catch (err) {
+      console.error('⚠️ فشل حساب السلة:', err.message);
+      setCartTotals(null);
+    } finally {
+      setCartTotalsLoading(false);
+    }
+  };
+  useEffect(() => { calculateCartTotals(); }, [cart]);
+
+  const applyCouponCode = async () => {
+    if (!couponInput.trim()) return;
+    setCouponApplying(true);
+    setCouponError('');
+    try {
+      const data = await apiFetch('/orders/calculate', {
+        method: 'POST',
+        body: JSON.stringify({
+          items: cart.map(item => ({
+            productId: item.id,
+            quantity: item.quantity,
+            chosenColor: item.chosenColor,
+            chosenDevice: item.chosenDevice || null
+          })),
+          couponCode: couponInput.trim()
+        })
+      });
+      if (data.couponError) {
+        setCouponError(data.couponError);
+        setAppliedCouponCode('');
+        setCartTotals(data);
+      } else {
+        setAppliedCouponCode(couponInput.trim());
+        setCartTotals(data);
+        showToast(lang === 'ar' ? 'تم تطبيق كود الخصم بنجاح 🏷️' : 'Coupon applied successfully 🏷️', 'success');
+      }
+    } catch (err) {
+      setCouponError(err.message);
+    } finally {
+      setCouponApplying(false);
+    }
+  };
+
+  const removeCouponCode = () => {
+    setAppliedCouponCode('');
+    setCouponInput('');
+    setCouponError('');
+    calculateCartTotals(null);
+  };
+
+  const resetPromoForm = () => {
+    setPromoTitle(''); setPromoType('buy_x_get_y_free'); setPromoScope('all');
+    setPromoCategoryTarget('cases'); setPromoBuyQty(2); setPromoFreeQty(1);
+    setPromoMinQty(0); setPromoMinAmount(0); setPromoDiscountValue(0);
+  };
+
+  const handleAddPromotion = async (e) => {
+    e.preventDefault();
+    if (!promoTitle.trim()) return;
+    setPromoSaving(true);
+    try {
+      await apiFetch('/promotions', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({
+          title: promoTitle.trim(),
+          type: promoType,
+          scope: promoScope,
+          categoryTarget: promoScope === 'category' ? promoCategoryTarget : '',
+          buyQty: Number(promoBuyQty),
+          freeQty: Number(promoFreeQty),
+          minQty: Number(promoMinQty),
+          minAmount: Number(promoMinAmount),
+          discountValue: Number(promoDiscountValue)
+        })
+      });
+      showToast(lang === 'ar' ? 'تم إضافة العرض بنجاح 🎁' : 'Promotion added successfully 🎁', 'success');
+      resetPromoForm();
+      loadAllPromotions();
+      loadActivePromotions();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setPromoSaving(false);
+    }
+  };
+
+  const togglePromotionActive = async (promo) => {
+    try {
+      await apiFetch(`/promotions/${promo.id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ isActive: !promo.isActive })
+      });
+      loadAllPromotions();
+      loadActivePromotions();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const deletePromotion = async (id) => {
+    if (!window.confirm(lang === 'ar' ? 'متأكد إنك عايز تحذف العرض ده؟' : 'Delete this promotion?')) return;
+    try {
+      await apiFetch(`/promotions/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${adminToken}` }
+      });
+      showToast(lang === 'ar' ? 'تم حذف العرض' : 'Promotion deleted', 'success');
+      loadAllPromotions();
+      loadActivePromotions();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const handleUpdateShippingFee = async (e) => {
+    e.preventDefault();
+    setShippingSaving(true);
+    try {
+      await apiFetch('/shipping', {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ defaultFee: Number(shippingFeeInput) })
+      });
+      showToast(lang === 'ar' ? 'تم تحديث رسوم الشحن 🚚' : 'Shipping fee updated 🚚', 'success');
+      loadShippingFee();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setShippingSaving(false);
+    }
+  };
+
+  // بادچ العرض المطبق على منتج معين (لو موجود) - يستخدم في الكروت وصفحة التفاصيل
+  const getPromotionBadgeForProduct = (product) => {
+    return activePromotions.find(p =>
+      p.type === 'buy_x_get_y_free' && (p.scope === 'all' || (p.scope === 'category' && p.categoryTarget === product.category))
+    );
+  };
+
+  // 🔄 تحميل كل أكواد الخصم (أدمن فقط)
+  const loadAllCoupons = async () => {
+    if (!adminToken) return;
+    try {
+      const data = await apiFetch('/coupons', {
+        headers: { Authorization: `Bearer ${adminToken}` }
+      });
+      setAllCoupons(data);
+    } catch (err) {
+      console.error('⚠️ فشل تحميل أكواد الخصم:', err.message);
+    }
+  };
+  useEffect(() => { if (page === 'admin' && adminTab === 'promotions' && adminToken) loadAllCoupons(); }, [page, adminTab, adminToken]);
+
+  const resetCouponForm = () => {
+    setCouponCodeInput(''); setCouponPercentInput('');
+    setCouponMinAmountInput('0'); setCouponMaxUsesInput('0'); setCouponExpiryInput('');
+  };
+
+  const handleAddCoupon = async (e) => {
+    e.preventDefault();
+    if (!couponCodeInput.trim() || !couponPercentInput) return;
+    setCouponSaving(true);
+    try {
+      await apiFetch('/coupons', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({
+          code: couponCodeInput.trim(),
+          discountPercentage: Number(couponPercentInput),
+          minAmount: Number(couponMinAmountInput) || 0,
+          maxUses: Number(couponMaxUsesInput) || 0,
+          expiresAt: couponExpiryInput || null
+        })
+      });
+      showToast(lang === 'ar' ? 'تم إضافة الكود بنجاح 🏷️' : 'Coupon added successfully 🏷️', 'success');
+      resetCouponForm();
+      loadAllCoupons();
+    } catch (err) {
+      showToast(err.message, 'error');
+    } finally {
+      setCouponSaving(false);
+    }
+  };
+
+  const toggleCouponActive = async (coupon) => {
+    try {
+      await apiFetch(`/coupons/${coupon.id}`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${adminToken}` },
+        body: JSON.stringify({ isActive: !coupon.isActive })
+      });
+      loadAllCoupons();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  };
+
+  const deleteCoupon = async (id) => {
+    if (!window.confirm(lang === 'ar' ? 'متأكد إنك عايز تحذف الكود ده؟' : 'Delete this coupon?')) return;
+    try {
+      await apiFetch(`/coupons/${id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${adminToken}` }
+      });
+      showToast(lang === 'ar' ? 'تم حذف الكود' : 'Coupon deleted', 'success');
+      loadAllCoupons();
+    } catch (err) {
+      showToast(err.message, 'error');
     }
   };
 
@@ -606,6 +912,7 @@ export default function App() {
     const goToDetail = () => { setDetailProductId(prod.id); setProductMediaTab('photo'); setPage('product-detail'); };
     const hasDiscount = prod.oldPrice && prod.oldPrice > prod.price;
     const isWishlisted = wishlist.includes(prod.id);
+    const promoBadge = getPromotionBadgeForProduct(prod);
 
     return (
       <div
@@ -631,6 +938,9 @@ export default function App() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
             </svg>
           </button>
+          {promoBadge && !isSoldOut && (
+            <span className="absolute bottom-2 right-2 left-2 bg-emerald-500 text-white text-[9px] font-black px-2 py-1 rounded-lg shadow text-center truncate">🎁 {promoBadge.title}</span>
+          )}
         </div>
         <div className="p-3 sm:p-4">
           <h4 className="font-bold text-xs sm:text-sm mb-1 truncate text-[#0F172A] dark:text-white group-hover:text-[#2563EB] transition-colors">{lang === 'ar' ? prod.nameAr : prod.nameEn}</h4>
@@ -730,12 +1040,17 @@ export default function App() {
             chosenColor: item.chosenColor,
             chosenDevice: item.chosenDevice || null
           })),
-          paymentMethod: 'COD'
+          paymentMethod: 'COD',
+          couponCode: appliedCouponCode || null
         })
       });
 
       setOrderConfirmation({ orderNumber: data.orderNumber, grandTotal: data.grandTotal });
       setCart([]);
+      setCartTotals(null);
+      setAppliedCouponCode('');
+      setCouponInput('');
+      setCouponError('');
       setIsCartOpen(false);
 
       // تحديث المنتجات (الكمية المتاحة اتغيرت) وطلبات العميل
@@ -1429,6 +1744,12 @@ export default function App() {
                   {(prod.descAr || prod.descEn) && (
                     <p className="text-sm text-gray-500 mb-5 leading-relaxed">{lang === 'ar' ? prod.descAr : prod.descEn}</p>
                   )}
+                  {getPromotionBadgeForProduct(prod) && (
+                    <div className="flex items-center gap-2 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 font-bold text-sm px-4 py-2.5 rounded-xl mb-5">
+                      <span className="text-lg">🎁</span>
+                      <span>{getPromotionBadgeForProduct(prod).title}</span>
+                    </div>
+                  )}
 
                   <div className="flex items-baseline gap-3 mb-6 pb-6 border-b border-gray-100 dark:border-gray-800">
                     <span className="text-3xl font-black text-[#2563EB]">{prod.price} {t.currency}</span>
@@ -1673,6 +1994,7 @@ export default function App() {
                 <button onClick={() => setAdminTab('orders')} className={`px-4 py-2 rounded-lg ${adminTab === 'orders' ? 'bg-amber-500 text-white' : 'bg-gray-200 text-gray-800'}`}>📥 الطلبات الواردة ({orders.filter(o => o.status === 'preparing').length})</button>
                 <button onClick={() => setAdminTab('products')} className={`px-4 py-2 rounded-lg ${adminTab === 'products' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-800'}`}>✨ إضافة المنتجات</button>
                 <button onClick={() => setAdminTab('ads')} className={`px-4 py-2 rounded-lg ${adminTab === 'ads' ? 'bg-purple-600 text-white' : 'bg-gray-200 text-gray-800'}`}>🎬 الإعلانات</button>
+                <button onClick={() => setAdminTab('promotions')} className={`px-4 py-2 rounded-lg ${adminTab === 'promotions' ? 'bg-pink-600 text-white' : 'bg-gray-200 text-gray-800'}`}>🎁 العروض والشحن</button>
                 {adminTab === 'orders' && (
                   <button onClick={loadAllOrders} className="px-3 py-2 rounded-lg bg-gray-200 text-gray-700 hover:bg-gray-300" title="تحديث الطلبات">
                     🔄 {ordersLoading ? 'جاري التحديث...' : 'تحديث'}
@@ -2104,6 +2426,197 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {adminTab === 'promotions' && (
+              <div className="space-y-6">
+                {/* إعدادات رسوم الشحن */}
+                <div className={`p-5 rounded-xl border ${isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                  <h3 className="font-black text-sm mb-4 text-blue-500">🚚 رسوم الشحن الافتراضية</h3>
+                  <form onSubmit={handleUpdateShippingFee} className="flex items-end gap-3">
+                    <div className="flex-grow max-w-xs">
+                      <label className="block font-bold mb-1 text-xs">رسوم التوصيل (ج.م)</label>
+                      <input type="number" min="0" value={shippingFeeInput} onChange={(e) => setShippingFeeInput(e.target.value)} className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700 text-sm" />
+                    </div>
+                    <button type="submit" disabled={shippingSaving} className={`bg-blue-600 text-white font-bold px-5 py-2.5 rounded-lg text-xs transition-all active:scale-95 ${shippingSaving ? 'opacity-60' : ''}`}>
+                      {shippingSaving ? '⏳...' : 'حفظ'}
+                    </button>
+                  </form>
+                  <p className="text-[10px] text-gray-400 mt-2">الرقم ده بيتضاف تلقائياً على أي أوردر، إلا لو العميل مستحق عرض "توصيل مجاني" فبيتصفّر تلقائياً.</p>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* فورم إضافة عرض جديد */}
+                  <div className={`p-5 rounded-xl border h-fit ${isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                    <h3 className="font-black text-sm mb-4 text-pink-500">🎁 إضافة عرض جديد</h3>
+                    <form onSubmit={handleAddPromotion} className="space-y-4 text-xs font-medium">
+                      <div>
+                        <label className="block font-bold mb-1">عنوان العرض (يظهر للعميل) *</label>
+                        <input type="text" value={promoTitle} onChange={(e) => setPromoTitle(e.target.value)} placeholder="مثال: اشتري 2 واحصل على الثالث مجاناً" className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700" required />
+                      </div>
+
+                      <div>
+                        <label className="block font-bold mb-1">نوع العرض *</label>
+                        <select value={promoType} onChange={(e) => setPromoType(e.target.value)} className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700">
+                          <option value="buy_x_get_y_free">اشتري X واحصل على Y مجاناً</option>
+                          <option value="free_shipping">توصيل مجاني</option>
+                          <option value="percentage_off">خصم نسبة %</option>
+                          <option value="fixed_off">خصم مبلغ ثابت</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block font-bold mb-1">نطاق التطبيق *</label>
+                        <div className="flex gap-2">
+                          <button type="button" onClick={() => setPromoScope('all')} className={`flex-1 py-2 rounded-lg font-bold ${promoScope === 'all' ? 'bg-pink-600 text-white' : isDark ? 'bg-gray-800 text-gray-400' : 'bg-gray-100 text-gray-600'}`}>كل المنتجات</button>
+                          <button type="button" onClick={() => setPromoScope('category')} className={`flex-1 py-2 rounded-lg font-bold ${promoScope === 'category' ? 'bg-pink-600 text-white' : isDark ? 'bg-gray-800 text-gray-400' : 'bg-gray-100 text-gray-600'}`}>قسم معين</button>
+                        </div>
+                      </div>
+
+                      {promoScope === 'category' && (
+                        <div>
+                          <label className="block font-bold mb-1">القسم المستهدف</label>
+                          <select value={promoCategoryTarget} onChange={(e) => setPromoCategoryTarget(e.target.value)} className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700">
+                            {categories.map(cat => <option key={cat.id} value={cat.id}>{cat.nameAr}</option>)}
+                          </select>
+                        </div>
+                      )}
+
+                      {promoType === 'buy_x_get_y_free' && (
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block font-bold mb-1">اشتري (عدد)</label>
+                            <input type="number" min="1" value={promoBuyQty} onChange={(e) => setPromoBuyQty(e.target.value)} className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700" />
+                          </div>
+                          <div>
+                            <label className="block font-bold mb-1">احصل مجاناً (عدد)</label>
+                            <input type="number" min="1" value={promoFreeQty} onChange={(e) => setPromoFreeQty(e.target.value)} className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700" />
+                          </div>
+                          <p className="col-span-2 text-[10px] text-gray-400">مثال: اشتري 2 (buyQty) واحصل على 1 (freeQty) مجاناً = اشتري 2 خد التالت ببلاش، وبتتكرر تلقائياً كل ما العميل يزود الكمية.</p>
+                        </div>
+                      )}
+
+                      {(promoType === 'free_shipping' || promoType === 'percentage_off' || promoType === 'fixed_off') && (
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block font-bold mb-1">أقل عدد قطع (اختياري)</label>
+                            <input type="number" min="0" value={promoMinQty} onChange={(e) => setPromoMinQty(e.target.value)} placeholder="0 = بدون شرط" className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700" />
+                          </div>
+                          <div>
+                            <label className="block font-bold mb-1">أقل قيمة سلة (ج.م، اختياري)</label>
+                            <input type="number" min="0" value={promoMinAmount} onChange={(e) => setPromoMinAmount(e.target.value)} placeholder="0 = بدون شرط" className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700" />
+                          </div>
+                          <p className="col-span-2 text-[10px] text-gray-400">حدد شرط واحد على الأقل (عدد قطع أو قيمة سلة) عشان العرض يتفعل.</p>
+                        </div>
+                      )}
+
+                      {(promoType === 'percentage_off' || promoType === 'fixed_off') && (
+                        <div>
+                          <label className="block font-bold mb-1">{promoType === 'percentage_off' ? 'نسبة الخصم %' : 'قيمة الخصم (ج.م)'}</label>
+                          <input type="number" min="0" value={promoDiscountValue} onChange={(e) => setPromoDiscountValue(e.target.value)} className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700" />
+                        </div>
+                      )}
+
+                      <button type="submit" disabled={promoSaving} className={`w-full bg-pink-600 text-white font-bold py-3 rounded-lg text-xs transition-all active:scale-[0.98] ${promoSaving ? 'opacity-60' : ''}`}>
+                        {promoSaving ? '⏳ جاري الإضافة...' : '🎁 إضافة العرض'}
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* قائمة العروض الحالية */}
+                  <div className={`p-5 rounded-xl border h-fit ${isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                    <h3 className="font-black text-sm mb-4">📋 العروض الحالية ({allPromotions.length})</h3>
+                    {allPromotions.length === 0 ? (
+                      <p className="text-xs text-gray-400 text-center py-8">لا توجد عروض مضافة بعد</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {allPromotions.map(promo => {
+                          const typeLabels = { buy_x_get_y_free: 'اشتري وخد ببلاش', free_shipping: 'توصيل مجاني', percentage_off: 'خصم نسبة', fixed_off: 'خصم ثابت' };
+                          return (
+                            <div key={promo.id} className={`p-3 rounded-lg border text-xs ${promo.isActive ? (isDark ? 'bg-slate-950 border-emerald-900/40' : 'bg-emerald-50/50 border-emerald-100') : isDark ? 'bg-slate-950/50 border-gray-800 opacity-60' : 'bg-gray-50 border-gray-200 opacity-60'}`}>
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="min-w-0">
+                                  <p className="font-bold truncate">{promo.title}</p>
+                                  <p className="text-[10px] text-gray-400 mt-0.5">{typeLabels[promo.type]} • {promo.scope === 'all' ? 'كل المنتجات' : `قسم: ${promo.categoryTarget}`}</p>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  <button onClick={() => togglePromotionActive(promo)} className={`px-2.5 py-1 rounded-full font-bold text-[10px] ${promo.isActive ? 'bg-emerald-500 text-white' : 'bg-gray-300 text-gray-600'}`}>
+                                    {promo.isActive ? 'فعّال' : 'متوقف'}
+                                  </button>
+                                  <button onClick={() => deletePromotion(promo.id)} className="text-red-500 font-black px-1.5">×</button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* ===== أكواد الخصم (Coupons) - كود يكتبه العميل بنفسه في السلة ===== */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  <div className={`p-5 rounded-xl border h-fit ${isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                    <h3 className="font-black text-sm mb-4 text-amber-500">🏷️ إضافة كود خصم جديد</h3>
+                    <form onSubmit={handleAddCoupon} className="space-y-4 text-xs font-medium">
+                      <div>
+                        <label className="block font-bold mb-1">الكود (اللي العميل هيكتبه) *</label>
+                        <input type="text" value={couponCodeInput} onChange={(e) => setCouponCodeInput(e.target.value.toUpperCase())} placeholder="مثال: WELCOME10" className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700 font-mono tracking-wider" required />
+                      </div>
+                      <div>
+                        <label className="block font-bold mb-1">نسبة الخصم % *</label>
+                        <input type="number" min="1" max="100" value={couponPercentInput} onChange={(e) => setCouponPercentInput(e.target.value)} placeholder="مثال: 10" className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700" required />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="block font-bold mb-1">أقل قيمة سلة (اختياري)</label>
+                          <input type="number" min="0" value={couponMinAmountInput} onChange={(e) => setCouponMinAmountInput(e.target.value)} placeholder="0 = بدون شرط" className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700" />
+                        </div>
+                        <div>
+                          <label className="block font-bold mb-1">حد الاستخدام (اختياري)</label>
+                          <input type="number" min="0" value={couponMaxUsesInput} onChange={(e) => setCouponMaxUsesInput(e.target.value)} placeholder="0 = بدون حد" className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700" />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block font-bold mb-1">تاريخ الانتهاء (اختياري)</label>
+                        <input type="date" value={couponExpiryInput} onChange={(e) => setCouponExpiryInput(e.target.value)} className="w-full border rounded-lg p-2.5 bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-white border-gray-300 dark:border-gray-700" />
+                      </div>
+                      <button type="submit" disabled={couponSaving} className={`w-full bg-amber-500 text-white font-bold py-3 rounded-lg text-xs transition-all active:scale-[0.98] ${couponSaving ? 'opacity-60' : ''}`}>
+                        {couponSaving ? '⏳ جاري الإضافة...' : '🏷️ إضافة الكود'}
+                      </button>
+                    </form>
+                  </div>
+
+                  <div className={`p-5 rounded-xl border h-fit ${isDark ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'}`}>
+                    <h3 className="font-black text-sm mb-4">📋 الأكواد الحالية ({allCoupons.length})</h3>
+                    {allCoupons.length === 0 ? (
+                      <p className="text-xs text-gray-400 text-center py-8">لا توجد أكواد خصم مضافة بعد</p>
+                    ) : (
+                      <div className="space-y-2">
+                        {allCoupons.map(coupon => (
+                          <div key={coupon.id} className={`p-3 rounded-lg border text-xs ${coupon.isActive ? (isDark ? 'bg-slate-950 border-amber-900/40' : 'bg-amber-50/50 border-amber-100') : isDark ? 'bg-slate-950/50 border-gray-800 opacity-60' : 'bg-gray-50 border-gray-200 opacity-60'}`}>
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="font-mono font-black tracking-wider">{coupon.code}</p>
+                                <p className="text-[10px] text-gray-400 mt-0.5">
+                                  خصم {coupon.discountPercentage}% • استخدم {coupon.usedCount} {coupon.maxUses > 0 ? `/ ${coupon.maxUses}` : ''} مرة
+                                  {coupon.expiresAt && ` • حتى ${new Date(coupon.expiresAt).toLocaleDateString('ar-EG')}`}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button onClick={() => toggleCouponActive(coupon)} className={`px-2.5 py-1 rounded-full font-bold text-[10px] ${coupon.isActive ? 'bg-emerald-500 text-white' : 'bg-gray-300 text-gray-600'}`}>
+                                  {coupon.isActive ? 'فعّال' : 'متوقف'}
+                                </button>
+                                <button onClick={() => deleteCoupon(coupon.id)} className="text-red-500 font-black px-1.5">×</button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </main>
@@ -2155,14 +2668,75 @@ export default function App() {
                 </div>
 
                 <div className="border-t border-gray-200 dark:border-gray-800 p-6 space-y-3">
-                  <div className="flex justify-between text-xs text-gray-400 font-medium">
-                    <span>{t.subtotal} ({cart.reduce((c, i) => c + i.quantity, 0)} {lang === 'ar' ? 'قطعة' : 'items'})</span>
-                    <span>{cart.reduce((t, i) => t + (i.price * i.quantity), 0)} {t.currency}</span>
-                  </div>
-                  <div className="flex justify-between font-black text-lg">
-                    <span>{t.total}</span>
-                    <span className="text-blue-500">{cart.reduce((t, i) => t + (i.price * i.quantity), 0)} {t.currency}</span>
-                  </div>
+                  {/* كود الخصم */}
+                  {appliedCouponCode ? (
+                    <div className="flex items-center justify-between bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 text-xs font-bold px-3 py-2.5 rounded-lg">
+                      <span className="flex items-center gap-1.5">🏷️ {appliedCouponCode}</span>
+                      <button onClick={removeCouponCode} className="text-red-500 hover:text-red-600">
+                        {lang === 'ar' ? 'إزالة' : 'Remove'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div>
+                      <div className="flex gap-2">
+                        <input
+                          type="text"
+                          value={couponInput}
+                          onChange={(e) => { setCouponInput(e.target.value); setCouponError(''); }}
+                          placeholder={lang === 'ar' ? 'عندك كود خصم؟' : 'Have a coupon code?'}
+                          className={`flex-grow border rounded-lg p-2.5 text-xs outline-none focus:border-[#2563EB] ${isDark ? 'bg-slate-950 border-gray-700 text-white' : 'bg-gray-50 border-gray-200 text-gray-900'}`}
+                        />
+                        <button
+                          onClick={applyCouponCode}
+                          disabled={couponApplying || !couponInput.trim()}
+                          className={`bg-[#0F172A] text-white font-bold px-4 rounded-lg text-xs shrink-0 transition-all active:scale-95 ${couponApplying || !couponInput.trim() ? 'opacity-50' : ''}`}
+                        >
+                          {couponApplying ? '⏳' : (lang === 'ar' ? 'تطبيق' : 'Apply')}
+                        </button>
+                      </div>
+                      {couponError && <p className="text-[11px] text-red-500 font-bold mt-1.5">{couponError}</p>}
+                    </div>
+                  )}
+
+                  {cartTotalsLoading ? (
+                    <p className="text-center text-xs text-gray-400 py-2">⏳ {lang === 'ar' ? 'جاري حساب السلة...' : 'Calculating...'}</p>
+                  ) : cartTotals ? (
+                    <>
+                      {cartTotals.appliedPromotions.length > 0 && (
+                        <div className="space-y-1.5 mb-1">
+                          {cartTotals.appliedPromotions.map((promo, idx) => (
+                            <div key={idx} className="flex items-center gap-1.5 bg-emerald-50 dark:bg-emerald-900/20 text-emerald-700 dark:text-emerald-400 text-[11px] font-bold px-2.5 py-1.5 rounded-lg">
+                              <span>🎁</span>
+                              <span>{promo.title}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex justify-between text-xs text-gray-400 font-medium">
+                        <span>{t.subtotal} ({cart.reduce((c, i) => c + i.quantity, 0)} {lang === 'ar' ? 'قطعة' : 'items'})</span>
+                        <span>{cartTotals.subTotal} {t.currency}</span>
+                      </div>
+                      {cartTotals.discountAmount > 0 && (
+                        <div className="flex justify-between text-xs text-emerald-600 font-bold">
+                          <span>{lang === 'ar' ? 'الخصم' : 'Discount'}</span>
+                          <span>- {cartTotals.discountAmount} {t.currency}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between text-xs text-gray-400 font-medium">
+                        <span>{lang === 'ar' ? 'رسوم الشحن' : 'Shipping'}</span>
+                        <span>{cartTotals.shippingFees === 0 ? (lang === 'ar' ? 'مجاني 🎉' : 'Free 🎉') : `${cartTotals.shippingFees} ${t.currency}`}</span>
+                      </div>
+                      <div className="flex justify-between font-black text-lg pt-2 border-t border-gray-100 dark:border-gray-800">
+                        <span>{t.total}</span>
+                        <span className="text-[#2563EB]">{cartTotals.grandTotal} {t.currency}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex justify-between font-black text-lg">
+                      <span>{t.total}</span>
+                      <span className="text-[#2563EB]">{cart.reduce((tt, i) => tt + (i.price * i.quantity), 0)} {t.currency}</span>
+                    </div>
+                  )}
                   <button onClick={handleCheckout} disabled={checkoutLoading} className={`w-full bg-[#2563EB] hover:bg-blue-700 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-blue-600/25 text-sm transition-all active:scale-[0.98] ${checkoutLoading ? 'opacity-60 cursor-wait' : ''}`}>
                     {checkoutLoading ? (lang === 'ar' ? '⏳ جاري تأكيد الطلب...' : '⏳ Confirming order...') : t.checkout}
                   </button>
