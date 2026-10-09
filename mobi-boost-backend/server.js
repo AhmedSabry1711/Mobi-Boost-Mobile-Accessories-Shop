@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
+const path = require('path');
 const connectDB = require('./config/db');
 const errorHandler = require('./middlewares/errorHandler');
 
@@ -46,7 +47,7 @@ console.log('🔄 [8] جاري فحص ملف الـ Promotions...');
 const promotionRoutes = require('./routes/promotionRoutes');
 app.use('/api/promotions', promotionRoutes);
 
-console.log('🔄 [9] جاري فحص ملف الـ Shipping...');
+console.log('🔄 [9] جاري فحصملف الـ Shipping...');
 const shippingRoutes = require('./routes/shippingRoutes');
 app.use('/api/shipping', shippingRoutes);
 
@@ -54,8 +55,12 @@ console.log('🔄 [10] جاري فحص ملف الـ Coupons...');
 const couponRoutes = require('./routes/couponRoutes');
 app.use('/api/coupons', couponRoutes);
 
-app.get('/', (req, res) => {
-  res.send('🚀 MoBi Boost Backend Server is Running Smoothly!');
+// إخبار إكسبريس أن يعرض ملفات React الثابتة من مجلد dist
+app.use(express.static(path.join(__dirname, './dist')));
+
+// توجيه أي طلب آخر لصفحة index.html الخاصة بالرياكت
+app.get('*', (req, res) => {
+  res.sendFile(path.resolve(__dirname, './dist', 'index.html'));
 });
 
 app.use(errorHandler);
